@@ -14,8 +14,13 @@
 #![no_std]
 #![warn(missing_docs)]
 
+trait Sealed {}
+impl Sealed for f64 {}
+impl Sealed for f32 {}
+
 /// See [`crate`].
-pub trait CoreFloat: Sized + Copy {
+#[allow(private_bounds)]
+pub trait CoreFloat: Sized + Copy + Sealed {
     /// Returns the largest integer less than or equal to `self`.
     ///
     /// This implementation uses `libm` instead of the Rust intrinsic.
@@ -762,6 +767,64 @@ pub trait CoreFloat: Sized + Copy {
     /// assert!(abs_difference < 1.0e-10);
     /// ```
     fn atanh(self) -> Self;
+
+    /// Returns the least number greater than `self`.
+    ///
+    /// Let `TINY` be the smallest representable positive `f32`. Then,
+    ///  - if `self.is_nan()`, this returns `self`;
+    ///  - if `self` is [`NEG_INFINITY`], this returns [`MIN`];
+    ///  - if `self` is `-TINY`, this returns -0.0;
+    ///  - if `self` is -0.0 or +0.0, this returns `TINY`;
+    ///  - if `self` is [`MAX`] or [`INFINITY`], this returns [`INFINITY`];
+    ///  - otherwise the unique least value greater than `self` is returned.
+    ///
+    /// The identity `x.next_up() == -(-x).next_down()` holds for all non-NaN `x`. When `x`
+    /// is finite `x == x.next_up().next_down()` also holds.
+    ///
+    /// ```rust
+    /// // f32::EPSILON is the difference between 1.0 and the next number up.
+    /// assert_eq!(1.0f32.next_up(), 1.0 + f32::EPSILON);
+    /// // But not for most numbers.
+    /// assert!(0.1f32.next_up() < 0.1 + f32::EPSILON);
+    /// assert_eq!(16777216f32.next_up(), 16777218.0);
+    /// ```
+    ///
+    /// This operation corresponds to IEEE-754 `nextUp`.
+    ///
+    /// [`NEG_INFINITY`]: Self::NEG_INFINITY
+    /// [`INFINITY`]: Self::INFINITY
+    /// [`MIN`]: Self::MIN
+    /// [`MAX`]: Self::MAX
+    fn next_up(self) -> Self;
+
+    /// Returns the greatest number less than `self`.
+    ///
+    /// Let `TINY` be the smallest representable positive `f32`. Then,
+    ///  - if `self.is_nan()`, this returns `self`;
+    ///  - if `self` is [`INFINITY`], this returns [`MAX`];
+    ///  - if `self` is `TINY`, this returns 0.0;
+    ///  - if `self` is -0.0 or +0.0, this returns `-TINY`;
+    ///  - if `self` is [`MIN`] or [`NEG_INFINITY`], this returns [`NEG_INFINITY`];
+    ///  - otherwise the unique greatest value less than `self` is returned.
+    ///
+    /// The identity `x.next_down() == -(-x).next_up()` holds for all non-NaN `x`. When `x`
+    /// is finite `x == x.next_down().next_up()` also holds.
+    ///
+    /// ```rust
+    /// let x = 1.0f32;
+    /// // Clamp value into range [0, 1).
+    /// let clamped = x.clamp(0.0, 1.0f32.next_down());
+    /// assert!(clamped < 1.0);
+    /// assert_eq!(clamped.next_up(), 1.0);
+    /// ```
+    ///
+    /// This operation corresponds to IEEE-754 `nextDown`.
+    ///
+    /// [`NEG_INFINITY`]: Self::NEG_INFINITY
+    /// [`INFINITY`]: Self::INFINITY
+    /// [`MIN`]: Self::MIN
+    /// [`MAX`]: Self::MAX
+    fn next_down(self) -> Self;
 }
 
 impl CoreFloat for f32 {
@@ -990,6 +1053,48 @@ impl CoreFloat for f32 {
     fn atanh(self) -> Self {
         0.5 * ((2.0 * self) / (1.0 - self)).ln_1p()
     }
+
+    #[inline]
+    fn next_up(self) -> Self {
+        // Some targets violate Rust's assumption of IEEE semantics, e.g. by flushing
+        // denormals to zero. This is in general unsound and unsupported, but here
+        // we do our best to still produce the correct result on such targets.
+        let bits = self.to_bits();
+        if self.is_nan() || bits == Self::INFINITY.to_bits() {
+            return self;
+        }
+
+        let abs = self.abs().to_bits();
+        let next_bits = if abs == 0 {
+            1
+        } else if bits == abs {
+            bits + 1
+        } else {
+            bits - 1
+        };
+        Self::from_bits(next_bits)
+    }
+
+    #[inline]
+    fn next_down(self) -> Self {
+        // Some targets violate Rust's assumption of IEEE semantics, e.g. by flushing
+        // denormals to zero. This is in general unsound and unsupported, but here
+        // we do our best to still produce the correct result on such targets.
+        let bits = self.to_bits();
+        if self.is_nan() || bits == Self::NEG_INFINITY.to_bits() {
+            return self;
+        }
+
+        let abs = self.abs().to_bits();
+        let next_bits = if abs == 0 {
+            1
+        } else if bits == abs {
+            bits - 1
+        } else {
+            bits + 1
+        };
+        Self::from_bits(next_bits)
+    }
 }
 
 impl CoreFloat for f64 {
@@ -1217,5 +1322,47 @@ impl CoreFloat for f64 {
     #[inline]
     fn atanh(self) -> Self {
         0.5 * ((2.0 * self) / (1.0 - self)).ln_1p()
+    }
+
+    #[inline]
+    fn next_up(self) -> Self {
+        // Some targets violate Rust's assumption of IEEE semantics, e.g. by flushing
+        // denormals to zero. This is in general unsound and unsupported, but here
+        // we do our best to still produce the correct result on such targets.
+        let bits = self.to_bits();
+        if self.is_nan() || bits == Self::INFINITY.to_bits() {
+            return self;
+        }
+
+        let abs = self.abs().to_bits();
+        let next_bits = if abs == 0 {
+            1
+        } else if bits == abs {
+            bits + 1
+        } else {
+            bits - 1
+        };
+        Self::from_bits(next_bits)
+    }
+
+    #[inline]
+    fn next_down(self) -> Self {
+        // Some targets violate Rust's assumption of IEEE semantics, e.g. by flushing
+        // denormals to zero. This is in general unsound and unsupported, but here
+        // we do our best to still produce the correct result on such targets.
+        let bits = self.to_bits();
+        if self.is_nan() || bits == Self::NEG_INFINITY.to_bits() {
+            return self;
+        }
+
+        let abs = self.abs().to_bits();
+        let next_bits = if abs == 0 {
+            1
+        } else if bits == abs {
+            bits - 1
+        } else {
+            bits + 1
+        };
+        Self::from_bits(next_bits)
     }
 }
